@@ -39,9 +39,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timed-steps",    type=int,   default=10)
     parser.add_argument(
         "--mode",
-        choices=["forward", "forward-backward", "all"],
+        choices=["forward", "forward-backward", "forward-backward-optimizer", "all"],
         default="all",
-        help="Which pass(es) to benchmark. 'all' runs both forward and forward-backward.",
+        help="Which pass(es) to benchmark. 'all' runs forward, forward-backward, and forward-backward-optimizer.",
     )
     parser.add_argument(
         "--device",
@@ -63,7 +63,11 @@ def main() -> None:
     device = args.device or ("cuda" if __import__("torch").cuda.is_available() else "cpu")
     rows = []
 
-    modes = ("forward", "forward-backward") if args.mode == "all" else (args.mode,)
+    modes = (
+        ("forward", "forward-backward", "forward-backward-optimizer")
+        if args.mode == "all"
+        else (args.mode,)
+    )
 
     for spec in MODEL_SPECS:
         for mode in modes:
@@ -104,7 +108,7 @@ def main() -> None:
                 f"tokens/s={results['tokens_per_second']}",
                 flush=True,
             )
-        break  # TODO: remove this when we're ready to run all benchmarks
+        break  # only run the first size for a quick test
 
     df = pd.DataFrame(rows, columns=[
         "size", "d_model", "d_ff", "num_layers", "num_heads",

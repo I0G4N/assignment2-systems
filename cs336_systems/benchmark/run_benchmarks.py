@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from cs336_basics.data import get_batch
 from cs336_basics.model import BasicsTransformerLM
+from cs336_basics.optimizer import AdamW
 
 
 def _parse_args() -> argparse.Namespace:
@@ -34,9 +35,9 @@ def _parse_args() -> argparse.Namespace:
 	parser.add_argument("--timed-steps", type=int, default=50)
 	parser.add_argument(
 		"--mode",
-		choices=["forward", "forward-backward"],
+		choices=["forward", "forward-backward", "forward-backward-optimizer"],
 		default="forward-backward",
-		help="Benchmark just forward pass or full forward + backward pass.",
+		help="Benchmark mode: forward, forward-backward, or forward-backward-optimizer.",
 	)
 	parser.add_argument(
 		"--device",
@@ -108,16 +109,45 @@ def _make_batch(
 	return get_batch(dataset, batch_size=batch_size, context_length=context_length, device=str(device))
 
 
-def _run_step(model: BasicsTransformerLM, x: torch.Tensor, y: torch.Tensor, mode: str) -> None:
+def _run_step(
+	model: BasicsTransformerLM,
+	x: torch.Tensor,
+	y: torch.Tensor,
+	mode: str,
+	device: torch.device,
+	optimizer: AdamW | None = None,
+) -> None:
 	if mode == "forward":
 		with torch.no_grad():
 			_ = model(x)
+		_sync_cuda(device)
 		return
 
-	logits = model(x)
-	loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
-	loss.backward()
-	model.zero_grad(set_to_none=True)
+	if mode == "forward-backward":
+		logits = model(x)
+		_sync_cuda(device)
+		loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+		_sync_cuda(device)
+		loss.backward()
+		_sync_cuda(device)
+		model.zero_grad(set_to_none=True)
+		return
+
+	if mode == "forward-backward-optimizer":
+		if optimizer is None:
+			raise ValueError("optimizer mode requires an AdamW optimizer")
+		optimizer.zero_grad(set_to_none=True)
+		logits = model(x)
+		_sync_cuda(device)
+		loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+		_sync_cuda(device)
+		loss.backward()
+		_sync_cuda(device)
+		optimizer.step()
+		_sync_cuda(device)
+		return
+
+	raise ValueError(f"unsupported mode: {mode}")
 
 
 def benchmark(
@@ -138,6 +168,9 @@ def benchmark(
 	dataset_path: str | None = None,
 ) -> dict:
 	"""Run the benchmark and return a dict of timing metrics."""
+	if mode not in {"forward", "forward-backward", "forward-backward-optimizer"}:
+		raise ValueError("benchmark() supports only single modes: forward, forward-backward, forward-backward-optimizer")
+
 	_device = torch.device(device)
 	_dtype = _torch_dtype(dtype)
 
@@ -153,7 +186,9 @@ def benchmark(
 		d_ff=d_ff,
 		rope_theta=rope_theta,
 	).to(device=_device, dtype=_dtype)
-	model.train(mode=mode == "forward-backward")
+	model.train(mode != "forward")
+
+	optimizer = AdamW(model.parameters(), lr=1e-3) if mode == "forward-backward-optimizer" else None
 
 	dataset = _load_dataset(dataset_path) if dataset_path else None
 
@@ -166,20 +201,18 @@ def benchmark(
 	)
 
 	for _ in range(warmup_steps):
-		_run_step(model, x, y, mode)
-		_sync_cuda(_device)
+		_run_step(model, x, y, mode, _device, optimizer=optimizer)
 
 	step_times_ms: list[float] = []
 	for _ in range(timed_steps):
 		t0 = timeit.default_timer()
-		_run_step(model, x, y, mode)
-		_sync_cuda(_device)
+		_run_step(model, x, y, mode, _device, optimizer=optimizer)
 		t1 = timeit.default_timer()
 		step_times_ms.append((t1 - t0) * 1000.0)
 
 	times = np.array(step_times_ms)
 	avg_ms = float(np.mean(times))
-	std_ms = float(np.std(times, ddof=1))
+	std_ms = float(np.std(times, ddof=1)) if timed_steps > 1 else 0.0
 	elapsed_s = float(np.sum(times)) / 1000.0
 	tokens_per_step = batch_size * context_length
 	tokens_per_second = (tokens_per_step * timed_steps) / elapsed_s
