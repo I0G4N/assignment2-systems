@@ -169,14 +169,18 @@ def benchmark(
 		_run_step(model, x, y, mode)
 		_sync_cuda(_device)
 
-	start = timeit.default_timer()
+	step_times_ms: list[float] = []
 	for _ in range(timed_steps):
+		t0 = timeit.default_timer()
 		_run_step(model, x, y, mode)
 		_sync_cuda(_device)
-	end = timeit.default_timer()
+		t1 = timeit.default_timer()
+		step_times_ms.append((t1 - t0) * 1000.0)
 
-	elapsed_s = end - start
-	step_time_ms = (elapsed_s / timed_steps) * 1000.0
+	times = np.array(step_times_ms)
+	avg_ms = float(np.mean(times))
+	std_ms = float(np.std(times, ddof=1))
+	elapsed_s = float(np.sum(times)) / 1000.0
 	tokens_per_step = batch_size * context_length
 	tokens_per_second = (tokens_per_step * timed_steps) / elapsed_s
 
@@ -187,7 +191,8 @@ def benchmark(
 		"warmup_steps":      warmup_steps,
 		"timed_steps":       timed_steps,
 		"total_time_s":      round(elapsed_s, 6),
-		"avg_step_time_ms":  round(step_time_ms, 3),
+		"avg_step_time_ms":  round(avg_ms, 3),
+		"std_step_time_ms":  round(std_ms, 3),
 		"tokens_per_second": round(tokens_per_second, 2),
 	}
 
