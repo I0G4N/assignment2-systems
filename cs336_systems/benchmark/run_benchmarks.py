@@ -120,15 +120,81 @@ def _run_step(model: BasicsTransformerLM, x: torch.Tensor, y: torch.Tensor, mode
 	model.zero_grad(set_to_none=True)
 
 
-def main() -> None:
-	args = _parse_args()
-	device = torch.device(args.device)
-	dtype = _torch_dtype(args.dtype)
+def benchmark(
+	*,
+	vocab_size: int,
+	context_length: int,
+	d_model: int,
+	num_layers: int,
+	num_heads: int,
+	d_ff: int,
+	rope_theta: float,
+	batch_size: int,
+	mode: str,
+	device: str,
+	dtype: str,
+	warmup_steps: int,
+	timed_steps: int,
+	dataset_path: str | None = None,
+) -> dict:
+	"""Run the benchmark and return a dict of timing metrics."""
+	_device = torch.device(device)
+	_dtype = _torch_dtype(dtype)
 
-	if device.type == "cpu" and dtype in (torch.float16, torch.bfloat16):
+	if _device.type == "cpu" and _dtype in (torch.float16, torch.bfloat16):
 		raise ValueError("float16/bfloat16 are only recommended with CUDA for this benchmark script.")
 
 	model = BasicsTransformerLM(
+		vocab_size=vocab_size,
+		context_length=context_length,
+		d_model=d_model,
+		num_layers=num_layers,
+		num_heads=num_heads,
+		d_ff=d_ff,
+		rope_theta=rope_theta,
+	).to(device=_device, dtype=_dtype)
+	model.train(mode=mode == "forward-backward")
+
+	dataset = _load_dataset(dataset_path) if dataset_path else None
+
+	x, y = _make_batch(
+		batch_size=batch_size,
+		context_length=context_length,
+		vocab_size=vocab_size,
+		device=_device,
+		dataset=dataset,
+	)
+
+	for _ in range(warmup_steps):
+		_run_step(model, x, y, mode)
+		_sync_cuda(_device)
+
+	start = timeit.default_timer()
+	for _ in range(timed_steps):
+		_run_step(model, x, y, mode)
+		_sync_cuda(_device)
+	end = timeit.default_timer()
+
+	elapsed_s = end - start
+	step_time_ms = (elapsed_s / timed_steps) * 1000.0
+	tokens_per_step = batch_size * context_length
+	tokens_per_second = (tokens_per_step * timed_steps) / elapsed_s
+
+	return {
+		"mode":              mode,
+		"device":            str(_device),
+		"dtype":             str(_dtype),
+		"warmup_steps":      warmup_steps,
+		"timed_steps":       timed_steps,
+		"total_time_s":      round(elapsed_s, 6),
+		"avg_step_time_ms":  round(step_time_ms, 3),
+		"tokens_per_second": round(tokens_per_second, 2),
+	}
+
+
+def main() -> None:
+	args = _parse_args()
+	results = benchmark(
 		vocab_size=args.vocab_size,
 		context_length=args.context_length,
 		d_model=args.d_model,
@@ -136,42 +202,16 @@ def main() -> None:
 		num_heads=args.num_heads,
 		d_ff=args.d_ff,
 		rope_theta=args.rope_theta,
-	).to(device=device, dtype=dtype)
-	model.train(mode=args.mode == "forward-backward")
-
-	dataset = _load_dataset(args.dataset_path) if args.dataset_path else None
-
-	x, y = _make_batch(
 		batch_size=args.batch_size,
-		context_length=args.context_length,
-		vocab_size=args.vocab_size,
-		device=device,
-		dataset=dataset,
+		mode=args.mode,
+		device=args.device,
+		dtype=args.dtype,
+		warmup_steps=args.warmup_steps,
+		timed_steps=args.timed_steps,
+		dataset_path=args.dataset_path,
 	)
-
-	for _ in range(args.warmup_steps):
-		_run_step(model, x, y, args.mode)
-		_sync_cuda(device)
-
-	start = timeit.default_timer()
-	for _ in range(args.timed_steps):
-		_run_step(model, x, y, args.mode)
-		_sync_cuda(device)
-	end = timeit.default_timer()
-
-	elapsed_s = end - start
-	step_time_ms = (elapsed_s / args.timed_steps) * 1000.0
-	tokens_per_step = args.batch_size * args.context_length
-	tokens_per_second = (tokens_per_step * args.timed_steps) / elapsed_s
-
-	print(f"mode: {args.mode}")
-	print(f"device: {device}")
-	print(f"dtype: {dtype}")
-	print(f"warmup_steps: {args.warmup_steps}")
-	print(f"timed_steps: {args.timed_steps}")
-	print(f"total_time_s: {elapsed_s:.6f}")
-	print(f"avg_step_time_ms: {step_time_ms:.3f}")
-	print(f"tokens_per_second: {tokens_per_second:.2f}")
+	for key, val in results.items():
+		print(f"{key}: {val}")
 
 
 if __name__ == "__main__":
