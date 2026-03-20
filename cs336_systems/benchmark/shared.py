@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import timeit
 from contextlib import nullcontext
 from pathlib import Path
@@ -17,6 +18,63 @@ BenchmarkStepFn = Callable[
 ]
 
 VALID_MODES = {"forward", "forward-backward", "forward-backward-optimizer"}
+
+
+def build_benchmark_arg_parser(
+	*,
+	description: str,
+	mode_default: str,
+	vocab_size_default: int = 10000,
+	context_length_default: int = 128,
+	d_model_default: int = 1024,
+	num_layers_default: int = 24,
+	num_heads_default: int = 16,
+	d_ff_default: int = 4096,
+	rope_theta_default: float = 10000.0,
+	batch_size_default: int = 4,
+	warmup_steps_default: int = 5,
+	timed_steps_default: int = 10,
+) -> argparse.ArgumentParser:
+	parser = argparse.ArgumentParser(description=description)
+	parser.add_argument("--vocab-size", type=int, default=vocab_size_default)
+	parser.add_argument("--context-length", type=int, default=context_length_default)
+	parser.add_argument("--d-model", type=int, default=d_model_default)
+	parser.add_argument("--num-layers", type=int, default=num_layers_default)
+	parser.add_argument("--num-heads", type=int, default=num_heads_default)
+	parser.add_argument("--d-ff", type=int, default=d_ff_default)
+	parser.add_argument("--rope-theta", type=float, default=rope_theta_default)
+	parser.add_argument("--batch-size", type=int, default=batch_size_default)
+	parser.add_argument(
+		"--dataset-path",
+		type=str,
+		default=None,
+		help="Optional path to tokenized dataset (.npy or .pt). If omitted, random tokens are used.",
+	)
+	parser.add_argument("--warmup-steps", type=int, default=warmup_steps_default)
+	parser.add_argument("--timed-steps", type=int, default=timed_steps_default)
+	parser.add_argument(
+		"--mode",
+		choices=sorted(VALID_MODES),
+		default=mode_default,
+		help="Benchmark mode: forward, forward-backward, or forward-backward-optimizer.",
+	)
+	parser.add_argument(
+		"--device",
+		type=str,
+		default="cuda" if torch.cuda.is_available() else "cpu",
+	)
+	parser.add_argument(
+		"--dtype",
+		choices=["float32", "float16", "bfloat16"],
+		default="float32",
+		help="Model parameter dtype.",
+	)
+	parser.add_argument(
+		"--mixed-precision",
+		action="store_true",
+		help="Run forward and loss under BF16 autocast while keeping model parameters at the requested dtype.",
+	)
+	return parser
 
 
 def torch_dtype(dtype_name: str) -> torch.dtype:

@@ -7,51 +7,14 @@ import torch.cuda.nvtx as nvtx
 
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
-from cs336_systems.benchmark.shared import autocast_context, run_benchmark
+from cs336_systems.benchmark.shared import autocast_context, build_benchmark_arg_parser, run_benchmark
 
 
 
 def _parse_args() -> argparse.Namespace:
-	parser = argparse.ArgumentParser(
-		description="Nsys profile forward, forward-backward or forward-backward-optimizer steps for BasicsTransformerLM."
-	)
-	parser.add_argument("--vocab-size", type=int, default=10000)
-	parser.add_argument("--context-length", type=int, default=128)
-	parser.add_argument("--d-model", type=int, default=1024)
-	parser.add_argument("--num-layers", type=int, default=24)
-	parser.add_argument("--num-heads", type=int, default=16)
-	parser.add_argument("--d-ff", type=int, default=4096)
-	parser.add_argument("--rope-theta", type=float, default=10000.0)
-	parser.add_argument("--batch-size", type=int, default=4)
-	parser.add_argument(
-		"--dataset-path",
-		type=str,
-		default=None,
-		help="Optional path to tokenized dataset (.npy or .pt). If omitted, random tokens are used.",
-	)
-	parser.add_argument("--warmup-steps", type=int, default=5)
-	parser.add_argument("--timed-steps", type=int, default=5)
-	parser.add_argument(
-		"--mode",
-		choices=["forward", "forward-backward", "forward-backward-optimizer"],
-		default="forward-backward-optimizer",
-		help="Benchmark mode: forward, forward-backward, or forward-backward-optimizer.",
-	)
-	parser.add_argument(
-		"--device",
-		type=str,
-		default="cuda" if torch.cuda.is_available() else "cpu",
-	)
-	parser.add_argument(
-		"--dtype",
-		choices=["float32", "float16", "bfloat16"],
-		default="float32",
-		help="Model parameter dtype.",
-	)
-	parser.add_argument(
-		"--mixed-precision",
-		action="store_true",
-		help="Run forward and loss under BF16 autocast while keeping model parameters at the requested dtype.",
+	parser = build_benchmark_arg_parser(
+		description="Nsys profile forward, forward-backward or forward-backward-optimizer steps for BasicsTransformerLM.",
+		mode_default="forward-backward-optimizer",
 	)
 	return parser.parse_args()
 
