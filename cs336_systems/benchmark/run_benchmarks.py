@@ -15,7 +15,7 @@ from torch.optim import AdamW
 
 def _parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
-		description="Benchmark forward-only or forward+backward steps for BasicsTransformerLM."
+		description="Benchmark forward, forward-backward, forward-backward-optimizer steps for BasicsTransformerLM."
 	)
 	parser.add_argument("--vocab-size", type=int, default=50257)
 	parser.add_argument("--context-length", type=int, default=1024)
@@ -254,6 +254,3 @@ def main() -> None:
 
 if __name__ == "__main__":
 	main()
-
-
-
