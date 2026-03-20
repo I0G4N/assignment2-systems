@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from cs336_basics.data import get_batch
 from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.optimizer import AdamW
+from torch.optim import AdamW
 
 
 def _parse_args() -> argparse.Namespace:
