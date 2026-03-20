@@ -6,7 +6,7 @@ Usage:
 
 All options from run_benchmarks are forwarded (--mode, --batch-size,
 --context-length, --warmup-steps, --timed-steps, --device, --dtype,
---dataset-path). The per-size hyperparameters (d_model, d_ff, num_layers,
+--dataset-path, --mixed-precision). The per-size hyperparameters (d_model, d_ff, num_layers,
 num_heads) are fixed by the spec table and cannot be overridden on the CLI.
 """
 
@@ -54,6 +54,11 @@ def _parse_args() -> argparse.Namespace:
         choices=["float32", "float16", "bfloat16"],
         default="float32",
     )
+    parser.add_argument(
+        "--mixed-precision",
+        action="store_true",
+        help="Run forward and loss under BF16 autocast while keeping model parameters in float32.",
+    )
     parser.add_argument("--dataset-path", type=str, default=None)
     return parser.parse_args()
 
@@ -84,6 +89,7 @@ def main() -> None:
                 mode=mode,
                 device=device,
                 dtype=args.dtype,
+                mixed_precision=args.mixed_precision,
                 warmup_steps=args.warmup_steps,
                 timed_steps=args.timed_steps,
                 dataset_path=args.dataset_path,
@@ -96,6 +102,7 @@ def main() -> None:
                 "num_heads":         spec["num_heads"],
                 "device":            results["device"],
                 "dtype":             results["dtype"],
+                "mixed_precision":   results["mixed_precision"],
                 "mode":              results["mode"],
                 "warmup_steps":      results["warmup_steps"],
                 "avg_step_time_ms":  results["avg_step_time_ms"],
@@ -112,7 +119,7 @@ def main() -> None:
 
     df = pd.DataFrame(rows, columns=[
         "size", "d_model", "d_ff", "num_layers", "num_heads",
-        "device", "dtype", "mode", "warmup_steps",
+        "device", "dtype", "mixed_precision", "mode", "warmup_steps",
         "avg_step_time_ms", "std_step_time_ms", "tokens_per_second", "total_time_s",
     ])
 
