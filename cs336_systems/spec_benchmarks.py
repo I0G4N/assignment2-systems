@@ -115,7 +115,6 @@ def main() -> None:
                 f"tokens/s={results['tokens_per_second']}",
                 flush=True,
             )
-        break  # only run the first size for a quick test
 
     df = pd.DataFrame(rows, columns=[
         "size", "d_model", "d_ff", "num_layers", "num_heads",
