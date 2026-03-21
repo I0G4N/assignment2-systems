@@ -17,51 +17,31 @@ def _parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
-def _sync_cuda(device: torch.device) -> None:
-	if device.type == "cuda":
-		torch.cuda.synchronize(device)
-
-
 def _run_step(
 	model: BasicsTransformerLM,
 	x: torch.Tensor,
 	y: torch.Tensor,
 	mode: str,
-	device: torch.device,
-	mixed_precision: bool,
 	optimizer: AdamW | None = None,
 ) -> None:
 	if mode == "forward":
 		with torch.no_grad():
-			with autocast_context(device, mixed_precision):
-				_ = model(x)
-		_sync_cuda(device)
+			_ = model(x)
 		return
 
 	if mode == "forward-backward":
-		with autocast_context(device, mixed_precision):
-			logits = model(x)
-			_sync_cuda(device)
-			loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
-			_sync_cuda(device)
+		logits = model(x)
+		loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
 		loss.backward()
-		_sync_cuda(device)
 		model.zero_grad(set_to_none=True)
 		return
 
 	if mode == "forward-backward-optimizer":
-		if optimizer is None:
-			raise ValueError("optimizer mode requires an AdamW optimizer")
 		optimizer.zero_grad(set_to_none=True)
-		with autocast_context(device, mixed_precision):
-			logits = model(x)
-			_sync_cuda(device)
-			loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
-			_sync_cuda(device)
+		logits = model(x)
+		loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
 		loss.backward()
-		_sync_cuda(device)
 		optimizer.step()
-		_sync_cuda(device)
 		return
 
 	raise ValueError(f"unsupported mode: {mode}")
@@ -84,6 +64,7 @@ def benchmark(
 	warmup_steps: int,
 	timed_steps: int,
 	dataset_path: str | None = None,
+	memory_profiler_filename: str | None = None,
 ) -> dict:
 	"""Run the benchmark and return a dict of timing metrics."""
 	return run_benchmark(
@@ -104,6 +85,8 @@ def benchmark(
 		run_step=_run_step,
 		optimizer_factory=lambda params: AdamW(params, lr=1e-3),
 		dataset_path=dataset_path,
+		memory_profiler_filename=memory_profiler_filename,
+
 	)
 
 
@@ -125,6 +108,7 @@ def main() -> None:
 		warmup_steps=args.warmup_steps,
 		timed_steps=args.timed_steps,
 		dataset_path=args.dataset_path,
+		memory_profiler_filename=args.memory_profiler_filename,
 	)
 	for key, val in results.items():
 		print(f"{key}: {val}")

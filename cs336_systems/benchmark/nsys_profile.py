@@ -25,24 +25,30 @@ def _run_step(
 	x: torch.Tensor,
 	y: torch.Tensor,
 	mode: str,
-	device: torch.device,
-	mixed_precision: bool,
 	optimizer: AdamW | None = None,
 ) -> None:
-	if mode == "forward-backward-optimizer":
-		optimizer.zero_grad(set_to_none=True)
-	with nvtx.range("model_forward"):
-		with autocast_context(device, mixed_precision):
+	if mode == "forward":
+		with nvtx.range("forward"):
+			with torch.no_grad():
+				_ = model(x)
+		return
+
+	if mode == "forward-backward":
+		with nvtx.range("forward-backward"):
 			logits = model(x)
-	if mode != "forward":
-		with nvtx.range("loss_backward"):
-			with autocast_context(device, mixed_precision):
-				loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+			loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
 			loss.backward()
+			model.zero_grad(set_to_none=True)
+		return
+
 	if mode == "forward-backward-optimizer":
-		with nvtx.range("optimizer_step"):
+		with nvtx.range("forward-backward-optimizer"):
+			optimizer.zero_grad(set_to_none=True)
+			logits = model(x)
+			loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+			loss.backward()
 			optimizer.step()
-	return
+		return
 
 
 def _warmup_step(
@@ -50,21 +56,29 @@ def _warmup_step(
 	x: torch.Tensor,
 	y: torch.Tensor,
 	mode: str,
-	device: torch.device,
-	mixed_precision: bool,
 	optimizer: AdamW | None = None,
 ) -> None:
+	if mode == "forward":
+		with torch.no_grad():
+			_ = model(x)
+		return
+
+	if mode == "forward-backward":
+		logits = model(x)
+		loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+		loss.backward()
+		model.zero_grad(set_to_none=True)
+		return
+
 	if mode == "forward-backward-optimizer":
 		optimizer.zero_grad(set_to_none=True)
-	with autocast_context(device, mixed_precision):
 		logits = model(x)
-	if mode != "forward":
-		with autocast_context(device, mixed_precision):
-			loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+		loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
 		loss.backward()
-	if mode == "forward-backward-optimizer":
 		optimizer.step()
-	return
+		return
+
+	raise ValueError(f"unsupported mode: {mode}")
 
 
 def benchmark(
@@ -84,6 +98,7 @@ def benchmark(
 	warmup_steps: int,
 	timed_steps: int,
 	dataset_path: str | None = None,
+	memory_profiler_filename: str | None = None,
 ) -> dict:
 	"""Run the benchmark and return a dict of timing metrics."""
 	return run_benchmark(
@@ -105,6 +120,7 @@ def benchmark(
 		warmup_step=_warmup_step,
 		optimizer_factory=lambda params: AdamW(params, lr=1e-3),
 		dataset_path=dataset_path,
+		memory_profiler_filename=memory_profiler_filename,
 	)
 
 
@@ -126,6 +142,7 @@ def main() -> None:
 		warmup_steps=args.warmup_steps,
 		timed_steps=args.timed_steps,
 		dataset_path=args.dataset_path,
+		memory_profiler_filename=args.memory_profiler_filename,
 	)
 	for key, val in results.items():
 		print(f"{key}: {val}")

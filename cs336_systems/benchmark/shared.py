@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from enum import auto
 import timeit
 from contextlib import nullcontext
 from pathlib import Path
@@ -32,8 +33,8 @@ def build_benchmark_arg_parser(
 	d_ff_default: int = 4096,
 	rope_theta_default: float = 10000.0,
 	batch_size_default: int = 4,
-	warmup_steps_default: int = 5,
-	timed_steps_default: int = 10,
+	warmup_steps_default: int = 10,
+	timed_steps_default: int = 20,
 ) -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description=description)
 	parser.add_argument("--vocab-size", type=int, default=vocab_size_default)
@@ -57,6 +58,12 @@ def build_benchmark_arg_parser(
 		choices=sorted(VALID_MODES),
 		default=mode_default,
 		help="Benchmark mode: forward, forward-backward, or forward-backward-optimizer.",
+	)
+	parser.add_argument(
+		"--memory-profiler-filename",
+		type=str,
+		default=None,
+		help="Optional filename to save memory profiling results (e.g. from torch.profiler). If omitted, memory profiling is skipped.",
 	)
 	parser.add_argument(
 		"--device",
@@ -84,6 +91,11 @@ def torch_dtype(dtype_name: str) -> torch.dtype:
 		"bfloat16": torch.bfloat16,
 	}
 	return dtype_map[dtype_name]
+
+
+def _sync_cuda(device: torch.device) -> None:
+	if device.type == "cuda":
+		torch.cuda.synchronize(device)
 
 
 def autocast_context(device: torch.device, mixed_precision: bool):
@@ -171,6 +183,7 @@ def run_benchmark(
 	warmup_step: BenchmarkStepFn | None = None,
 	optimizer_factory: Callable[[Any], Any] | None = None,
 	dataset_path: str | None = None,
+	memory_profiler_filename: str | None = None,
 ) -> dict:
 	_device, _dtype = validate_inputs(mode, device, dtype, mixed_precision)
 
@@ -199,15 +212,25 @@ def run_benchmark(
 	)
 
 	step_for_warmup = warmup_step or run_step
-	for _ in range(warmup_steps):
-		step_for_warmup(model, x, y, mode, _device, mixed_precision, optimizer)
+	with autocast_context(_device, mixed_precision):
+		for _ in range(warmup_steps):
+			step_for_warmup(model, x, y, mode, optimizer)
+
+	if memory_profiler_filename is not None:
+		torch.cuda.memory._record_memory_history(max_entries=100000)
 
 	step_times_ms: list[float] = []
-	for _ in range(timed_steps):
-		t0 = timeit.default_timer()
-		run_step(model, x, y, mode, _device, mixed_precision, optimizer)
-		t1 = timeit.default_timer()
-		step_times_ms.append((t1 - t0) * 1000.0)
+	with autocast_context(_device, mixed_precision):
+		for _ in range(timed_steps):
+			t0 = timeit.default_timer()
+			run_step(model, x, y, mode, optimizer)
+			_sync_cuda(_device)
+			t1 = timeit.default_timer()
+			step_times_ms.append((t1 - t0) * 1000.0)
+
+	if memory_profiler_filename is not None:
+		torch.cuda.memory._dump_snapshot(memory_profiler_filename)
+		torch.cuda.memory._record_memory_history(enabled=None)
 
 	times = np.array(step_times_ms)
 	avg_ms = float(np.mean(times))
@@ -227,4 +250,5 @@ def run_benchmark(
 		"avg_step_time_ms":  round(avg_ms, 3),
 		"std_step_time_ms":  round(std_ms, 3),
 		"tokens_per_second": round(tokens_per_second, 2),
+		"memory_profiler_filename": memory_profiler_filename,
 	}
