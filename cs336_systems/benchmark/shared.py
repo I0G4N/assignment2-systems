@@ -226,6 +226,8 @@ def run_benchmark(
 		for _ in range(warmup_steps):
 			step_for_warmup(model, x, y, mode, optimizer)
 
+	_sync_cuda(_device)
+
 	if memory_profiler_filename is not None:
 		torch.cuda.memory._record_memory_history(max_entries=100000)
 
