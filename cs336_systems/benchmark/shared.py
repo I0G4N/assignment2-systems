@@ -81,6 +81,11 @@ def build_benchmark_arg_parser(
 		action="store_true",
 		help="Run forward and loss under BF16 autocast while keeping model parameters at the requested dtype.",
 	)
+	parser.add_argument(
+		"--compile-model",
+		action="store_true",
+		help="Compile the entire model with torch.compile before benchmark steps.",
+	)
 	return parser
 
 
@@ -177,6 +182,7 @@ def run_benchmark(
 	device: str,
 	dtype: str,
 	mixed_precision: bool,
+	compile_model: bool = False,
 	warmup_steps: int,
 	timed_steps: int,
 	run_step: BenchmarkStepFn,
@@ -197,6 +203,10 @@ def run_benchmark(
 		rope_theta=rope_theta,
 	).to(device=_device, dtype=_dtype)
 	model.train(mode != "forward")
+	if compile_model:
+		if not hasattr(torch, "compile"):
+			raise ValueError("--compile-model requires torch.compile (PyTorch >= 2.0).")
+		model = torch.compile(model)
 
 	optimizer = optimizer_factory(model.parameters()) if mode == "forward-backward-optimizer" and optimizer_factory else None
 	if mode == "forward-backward-optimizer" and optimizer is None:
@@ -244,6 +254,7 @@ def run_benchmark(
 		"device":            str(_device),
 		"dtype":             str(_dtype),
 		"mixed_precision":   mixed_precision,
+		"compile_model":     compile_model,
 		"warmup_steps":      warmup_steps,
 		"timed_steps":       timed_steps,
 		"total_time_s":      round(elapsed_s, 6),
