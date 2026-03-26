@@ -1,8 +1,9 @@
 import torch
-from torch import Tensor, einsum
+from torch import Tensor
 import math
 from typing import Tuple
 
+from einops import einsum
 from jaxtyping import Float, Int, Bool
 
 def _flash_attention_forward(
@@ -41,7 +42,7 @@ def _flash_attention_forward(
 
             k_block = k[:, col_start:col_end, :]
             v_block = v[:, col_start:col_end, :]
-            attn_scores = einsum('b i d_k, b j d_k -> b i j', q_block, k_block) * scale
+            attn_scores = einsum(q_block, k_block, 'b i d_k, b j d_k -> b i j') * scale
 
             if causal:
                 mask = torch.full((row_end - row_start, col_end - col_start), float('-inf'), device=device, dtype=dtype)
@@ -57,7 +58,7 @@ def _flash_attention_forward(
             P_ij = torch.exp(attn_scores - m_ij[:, :, None])
             l_ij = P_ij.sum(dim=-1) + l_i * torch.exp(m_i - m_ij)
 
-            o_block_j = einsum('b i j, b j d_v -> b i d_v', P_ij, v_block) + o_block * torch.exp(m_i - m_ij)[:, :, None]
+            o_block_j = einsum(P_ij, v_block, 'b i j, b j d_v -> b i d_v') + o_block * torch.exp(m_i - m_ij)[:, :, None]
 
             m_i, l_i, o_block = m_ij, l_ij, o_block_j
         
@@ -105,7 +106,7 @@ def _flash_attention_backward(
             if causal and col_start >= row_end:
                 continue
 
-            attn_scores = einsum('b i d_k, b j d_k -> b i j', q_block, k_block) * scale
+            attn_scores = einsum(q_block, k_block, 'b i d_k, b j d_k -> b i j') * scale
 
             if causal:
                 mask = torch.full((row_end - row_start, col_end - col_start), float('-inf'), device=device, dtype=dtype)
@@ -119,11 +120,11 @@ def _flash_attention_backward(
 
             P_ij = torch.exp(attn_scores - log_sum_exp[:, row_start:row_end][:, :, None])
 
-            dV[:, col_start:col_end, :] += einsum('b i j, b i d_v -> b j d_v', P_ij, grad_out[:, row_start:row_end, :])
-            dP_ij = einsum('b i d_v, b j d_v -> b i j', grad_out[:, row_start:row_end, :], v_block)
+            dV[:, col_start:col_end, :] += einsum(P_ij, grad_out[:, row_start:row_end, :], 'b i j, b i d_v -> b j d_v')
+            dP_ij = einsum(grad_out[:, row_start:row_end, :], v_block, 'b i d_v, b j d_v -> b i j')
             dS_ij = P_ij * (dP_ij - D[:, row_start:row_end][:, :, None])
-            dQ[:, row_start:row_end, :] += einsum('b i j, b j d_k -> b i d_k', dS_ij, k_block) * scale
-            dK[:, col_start:col_end, :] += einsum('b i j, b i d_k -> b j d_k', dS_ij, q_block) * scale
+            dQ[:, row_start:row_end, :] += einsum(dS_ij, k_block, 'b i j, b j d_k -> b i d_k') * scale
+            dK[:, col_start:col_end, :] += einsum(dS_ij, q_block, 'b i j, b i d_k -> b j d_k') * scale
 
     return dQ, dK, dV
 
@@ -157,12 +158,6 @@ class FlashAttentionFunction(torch.autograd.Function):
         dQ, dK, dV = _flash_attention_backward(q=q, k=k, v=v, out=out, grad_out=grad_output, log_sum_exp=log_sum_exp, Bc=Bc, Br=Br, causal=causal)
 
         return dQ, dK, dV, None, None, None
-
-
-
-
-        
-        
 
 
 def flash_attention(
