@@ -155,7 +155,7 @@ class FlashAttentionFunction(torch.autograd.Function):
 
         dQ, dK, dV = _flash_attention_backward(Q=Q, K=K, V=V, out=out, grad_out=grad_output, log_sum_exp=log_sum_exp, is_causal=is_causal)
 
-        return dQ, dK, dV, None, None, None
+        return dQ, dK, dV, None
 
 
 def flash_attention(
