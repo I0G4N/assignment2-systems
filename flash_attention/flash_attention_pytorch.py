@@ -4,30 +4,31 @@ import math
 from typing import Tuple
 
 from einops import einsum
-from jaxtyping import Float, Int, Bool
+from jaxtyping import Float, Bool
 
 def _flash_attention_forward(
-    q: Float[Tensor, "batch seq_len d_k"],
-    k: Float[Tensor, "batch seq_len d_k"],
-    v: Float[Tensor, "batch seq_len d_v"],
-    Bc: Int,
-    Br: Int,
-    causal: Bool = False,
+    Q: Float[Tensor, "batch seq_len d_k"],
+    K: Float[Tensor, "batch seq_len d_k"],
+    V: Float[Tensor, "batch seq_len d_v"],
+    is_causal: Bool = False,
 ) -> Tuple[Float[Tensor, "batch seq_len d_v"], Float[Tensor, "batch seq_len"]]:
+    
+    Bc = 16
+    Br = 16
 
-    dtype, device = q.dtype, q.device
-    batch_size, seq_len, d_k = q.shape
-    d_v = v.shape[2]
+    dtype, device = Q.dtype, Q.device
+    batch_size, seq_len, d_k = Q.shape
+    d_v = V.shape[2]
     scale = 1.0 / math.sqrt(d_k)
 
-    out = torch.zeros_like(v, dtype=dtype, device=device)
+    out = torch.zeros_like(V, dtype=dtype, device=device)
     log_sum_exp = torch.full((batch_size, seq_len), float('-inf'), dtype=dtype, device=device)
     
     for i in range(0, seq_len, Br):
         row_start = i
         row_end = min(i + Br, seq_len)
 
-        q_block = q[:, row_start:row_end, :]
+        q_block = Q[:, row_start:row_end, :]
 
         o_block = torch.zeros((batch_size, row_end - row_start, d_v), dtype=dtype, device=device)
         l_i = torch.zeros((batch_size, row_end - row_start), dtype=dtype, device=device)
@@ -37,14 +38,14 @@ def _flash_attention_forward(
             col_start = j
             col_end = min(j + Bc, seq_len)
 
-            if causal and col_start >= row_end:
+            if is_causal and col_start >= row_end:
                 break
 
-            k_block = k[:, col_start:col_end, :]
-            v_block = v[:, col_start:col_end, :]
+            k_block = K[:, col_start:col_end, :]
+            v_block = V[:, col_start:col_end, :]
             attn_scores = einsum(q_block, k_block, 'b i d_k, b j d_k -> b i j') * scale
 
-            if causal:
+            if is_causal:
                 mask = torch.full((row_end - row_start, col_end - col_start), float('-inf'), device=device, dtype=dtype)
                 for row_idx in range(row_end - row_start):
                     for col_idx in range(col_end - col_start):
@@ -69,46 +70,47 @@ def _flash_attention_forward(
 
 
 def _flash_attention_backward(
-    q: Float[Tensor, "batch seq_len d_k"],
-    k: Float[Tensor, "batch seq_len d_k"],
-    v: Float[Tensor, "batch seq_len d_v"],
+    Q: Float[Tensor, "batch seq_len d_k"],
+    K: Float[Tensor, "batch seq_len d_k"],
+    V: Float[Tensor, "batch seq_len d_v"],
     out: Float[Tensor, "batch seq_len d_v"],
     grad_out: Float[Tensor, "batch seq_len d_v"],
     log_sum_exp: Float[Tensor, "batch seq_len"],
-    Bc: Int,
-    Br: Int,
-    causal: Bool = False,
+    is_causal: Bool = False,
 ) -> Tuple[Float[Tensor, "batch seq_len d_k"], Float[Tensor, "batch seq_len d_k"], Float[Tensor, "batch seq_len d_v"]]:
     
-    dtype, device = q.dtype, q.device
-    batch_size, seq_len, dim_k = q.shape
-    dim_v = v.shape[2]
+    Bc = 16
+    Br = 16
+
+    dtype, device = Q.dtype, Q.device
+    batch_size, seq_len, dim_k = Q.shape
+    dim_v = V.shape[2]
     scale = 1.0 / math.sqrt(dim_k)
 
-    dQ = torch.zeros_like(q, dtype=dtype, device=device)
-    dK = torch.zeros_like(k, dtype=dtype, device=device)
-    dV = torch.zeros_like(v, dtype=dtype, device=device)
+    dQ = torch.zeros_like(Q, dtype=dtype, device=device)
+    dK = torch.zeros_like(K, dtype=dtype, device=device)
+    dV = torch.zeros_like(V, dtype=dtype, device=device)
     D = torch.sum(grad_out * out, dim=-1)
     
     for i in range(0, seq_len, Bc):
         col_start = i
         col_end = min(i + Bc, seq_len)
 
-        k_block = k[:, col_start:col_end, :]
-        v_block = v[:, col_start:col_end, :]
+        k_block = K[:, col_start:col_end, :]
+        v_block = V[:, col_start:col_end, :]
 
         for j in range(0, seq_len, Br):
             row_start = j
             row_end = min(j + Br, seq_len)
 
-            q_block = q[:, row_start:row_end, :]
+            q_block = Q[:, row_start:row_end, :]
 
-            if causal and col_start >= row_end:
+            if is_causal and col_start >= row_end:
                 continue
 
             attn_scores = einsum(q_block, k_block, 'b i d_k, b j d_k -> b i j') * scale
 
-            if causal:
+            if is_causal:
                 mask = torch.full((row_end - row_start, col_end - col_start), float('-inf'), device=device, dtype=dtype)
                 for row_idx in range(row_end - row_start):
                     for col_idx in range(col_end - col_start):
@@ -133,39 +135,33 @@ class FlashAttentionFunction(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        q: Float[Tensor, "batch seq_len d_k"],
-        k: Float[Tensor, "batch seq_len d_k"],
-        v: Float[Tensor, "batch seq_len d_v"],
-        Bc: int,
-        Br: int,
-        causal: bool = False,
+        Q: Float[Tensor, "batch seq_len d_k"],
+        K: Float[Tensor, "batch seq_len d_k"],
+        V: Float[Tensor, "batch seq_len d_v"],
+        is_causal: bool = False,
     ) -> Float[Tensor, "batch seq_len d_v"]:
         
-        out, log_sum_exp = _flash_attention_forward(q=q, k=k, v=v, Bc=Bc, Br=Br, causal=causal)
-        ctx.save_for_backward(q, k, v, out, log_sum_exp)
-        ctx.Bc = Bc
-        ctx.Br = Br
-        ctx.causal = causal
+        out, log_sum_exp = _flash_attention_forward(Q=Q, K=K, V=V, is_causal=is_causal)
+        ctx.save_for_backward(Q, K, V, out, log_sum_exp)
+        ctx.is_causal = is_causal
 
         return out
 
     @staticmethod
     def backward(ctx, grad_output):
         
-        q, k, v, out, log_sum_exp = ctx.saved_tensors
-        Bc, Br, causal = ctx.Bc, ctx.Br, ctx.causal
+        Q, K, V, out, log_sum_exp = ctx.saved_tensors
+        is_causal = ctx.is_causal
 
-        dQ, dK, dV = _flash_attention_backward(q=q, k=k, v=v, out=out, grad_out=grad_output, log_sum_exp=log_sum_exp, Bc=Bc, Br=Br, causal=causal)
+        dQ, dK, dV = _flash_attention_backward(Q=Q, K=K, V=V, out=out, grad_out=grad_output, log_sum_exp=log_sum_exp, is_causal=is_causal)
 
         return dQ, dK, dV, None, None, None
 
 
 def flash_attention(
-    q: Float[Tensor, "batch seq_len d_k"],
-    k: Float[Tensor, "batch seq_len d_k"],
-    v: Float[Tensor, "batch seq_len d_v"],
-    Bc: Int,
-    Br: Int,
-    causal: Bool = False,
+    Q: Float[Tensor, "batch seq_len d_k"],
+    K: Float[Tensor, "batch seq_len d_k"],
+    V: Float[Tensor, "batch seq_len d_v"],
+    is_causal: Bool = False,
 ) -> Float[Tensor, "batch seq_len d_v"]:
-    return FlashAttentionFunction.apply(q, k, v, Bc, Br, causal)
+    return FlashAttentionFunction.apply(Q, K, V, is_causal)
